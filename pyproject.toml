@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "contact-finder"
+version = "0.1.0"
+description = "Agentic CLI for finding verified business contacts at debtor companies."
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.0",
+    "httpx>=0.27",
+    "groq>=0.9",
+    "python-dotenv>=1.0",
+    "beautifulsoup4>=4.12",
+    "lxml>=4.9",
+    "usaddress>=0.5",
+    "email-validator>=2.0",
+    "tldextract>=5.0",
+    "python-whois>=0.9",
+    "dnspython>=2.6",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "respx>=0.21",
+    "ruff>=0.4",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project.scripts]
+contact-finder = "contact_finder.cli:main"

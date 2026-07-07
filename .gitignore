@@ -1,0 +1,21 @@
+.env
+.env.local
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Generated outputs
+out/*
+!out/.gitkeep
+
+# Input data: do not commit business addresses
+/data/*.csv
+/data/*.jsonl
+
+# IDE
+.vscode/
+.idea/
