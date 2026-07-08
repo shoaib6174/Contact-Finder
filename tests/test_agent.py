@@ -76,7 +76,7 @@ async def test_agent_calls_tool_and_returns_human_review_on_empty(config, row):
     mock_client = MagicMock()
     mock_client.chat.completions.create = mock_completion
 
-    with patch("contact_finder.agent.AsyncGroq", return_value=mock_client):
+    with patch("contact_finder.groq_client.AsyncGroq", return_value=mock_client):
         enriched, _, actions, errors = await enrich_row(row, config)
 
     assert enriched.needs_human_review is True
@@ -112,15 +112,36 @@ async def test_agent_returns_accepted_contact(config, row):
 
     final_payload = {"status": "final", "reasoning": "Found contact", "ranked_bundles": [bundle]}
     mock_completion = AsyncMock()
-    mock_completion.return_value = _make_response([
-        _make_choice(_make_message(content=__import__("json").dumps(final_payload))),
-    ])
+    mock_completion.side_effect = [
+        _make_response([
+            _make_choice(_make_message(tool_calls=[
+                _make_tool_call("opencorporates_lookup", {"name": "Example LLC", "state": "IL"}, "call_1"),
+            ])),
+        ]),
+        _make_response([
+            _make_choice(_make_message(content=__import__("json").dumps(final_payload))),
+        ]),
+    ]
 
     mock_client = MagicMock()
     mock_client.chat.completions.create = mock_completion
 
-    with patch("contact_finder.agent.AsyncGroq", return_value=mock_client):
-        enriched, _, actions, errors = await enrich_row(row, config)
+    fake_registry = [
+        {
+            "name": "Example LLC",
+            "jurisdiction": "us_il",
+            "state": "IL",
+            "city": "Springfield",
+            "zip": "62701",
+            "address": "123 Main St",
+            "source_url": "https://opencorporates.com/companies/us_il/12345",
+            "match_reason": "test",
+        }
+    ]
+
+    with patch("contact_finder.groq_client.AsyncGroq", return_value=mock_client):
+        with patch("contact_finder.agent._execute_tool", new=AsyncMock(return_value=fake_registry)):
+            enriched, _, actions, errors = await enrich_row(row, config)
 
     assert enriched.needs_human_review is False
     assert enriched.contact_role == "Accounts Payable"

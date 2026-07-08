@@ -10,12 +10,24 @@ load_dotenv()
 
 class Config:
     groq_api_key: str = os.getenv("GROQ_API_KEY", "")
+    groq_api_key_2: str | None = os.getenv("GROQ_API_KEY_2") or os.getenv("GROQ_API_URL_2") or None
     serper_api_key: str | None = os.getenv("SERPER_API_KEY") or None
+    serper_api_key_2: str | None = os.getenv("SERPER_API_KEY_2") or None
+
+    @property
+    def serper_api_keys(self) -> list[str]:
+        keys = []
+        if self.serper_api_key:
+            keys.append(self.serper_api_key)
+        if self.serper_api_key_2 and self.serper_api_key_2 not in keys:
+            keys.append(self.serper_api_key_2)
+        return keys
 
     request_delay: float = float(os.getenv("REQUEST_DELAY", "1.0"))
     max_tool_calls: int = int(os.getenv("MAX_TOOL_CALLS", "8"))
     confidence_threshold: float = float(os.getenv("CONFIDENCE_THRESHOLD", "0.7"))
-    default_model: str = os.getenv("DEFAULT_MODEL", "llama-3.1-8b-instant")  # cheaper during development
+    default_model: str = os.getenv("DEFAULT_MODEL", "llama-3.1-8b-instant")
+    agent_mode: str = os.getenv("AGENT_MODE", "fast")
 
     user_agent: str = "ContactFinderBot/0.1 (+https://example.com; research only)"
 
@@ -53,6 +65,7 @@ SOURCE_TRUST = {
 
 CORROBORATION_BONUS = 0.10
 MX_BONUS = 0.05
+DOMAIN_MATCH_BONUS = 0.15
 
 # Consumer email domains to reject
 CONSUMER_DOMAINS = {

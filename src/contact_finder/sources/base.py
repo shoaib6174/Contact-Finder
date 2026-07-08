@@ -42,12 +42,39 @@ def adapter(category: str) -> Callable:
     return decorator
 
 
+_SENSITIVE_KEYS = {
+    "email",
+    "phone",
+    "phone_number",
+    "address",
+    "snippet",
+    "body",
+    "raw_evidence",
+    "evidence",
+}
+
+
+def _is_sensitive_key(key: str) -> bool:
+    lower = key.lower()
+    return any(marker in lower for marker in _SENSITIVE_KEYS)
+
+
 def redact_result(result: Any) -> Any:
-    """Recursively redact PII from adapter results."""
+    """Recursively redact PII from adapter results, preserving titles/names."""
     if isinstance(result, str):
         return redact_text(result)
     if isinstance(result, list):
         return [redact_result(item) for item in result]
     if isinstance(result, dict):
-        return {k: redact_result(v) for k, v in result.items()}
+        cleaned = {}
+        for k, v in result.items():
+            if _is_sensitive_key(k):
+                cleaned[k] = redact_result(v)
+            else:
+                # Recurse into nested structures but keep bare strings intact.
+                if isinstance(v, (list, dict)):
+                    cleaned[k] = redact_result(v)
+                else:
+                    cleaned[k] = v
+        return cleaned
     return result

@@ -1,16 +1,35 @@
-"""End-to-end enrichment pipeline."""
+"""End-to-end enrichment pipeline with incremental output writing."""
 
 from __future__ import annotations
 
 import asyncio
 import csv
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
 from contact_finder.agent import enrich_row
+from contact_finder.agent_fast import enrich_row_fast
 from contact_finder.config import Config
 from contact_finder.models import DebtorRow, EnrichedRow, ProvenanceEntry, RunReport
-from contact_finder.reporter import write_csv, write_jsonl, write_run_report
+
+
+_CSV_FIELDNAMES = [
+    "row_id",
+    "full_name",
+    "address",
+    "company_name",
+    "email",
+    "phone_number",
+    "company_issuing_the_invoice",
+    "contact_name",
+    "contact_role",
+    "contact_email_or_phone",
+    "confidence_score",
+    "evidence",
+    "source",
+    "needs_human_review",
+]
 
 
 def _now() -> str:
@@ -24,43 +43,57 @@ async def enrich_csv(
     run_report_path: Path,
     config: Config,
 ) -> None:
-    """Read input CSV, enrich each row, and write outputs."""
+    """Read input CSV, enrich each row, and write outputs incrementally."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     provenance_path.parent.mkdir(parents=True, exist_ok=True)
     run_report_path.parent.mkdir(parents=True, exist_ok=True)
 
     rows = _read_input(input_path)
 
-    enriched_rows: list[EnrichedRow] = []
-    provenance: list[ProvenanceEntry] = []
-    actions: list[dict] = []
-    errors: list[dict] = []
+    enrich_fn = enrich_row_fast if config.agent_mode == "fast" else enrich_row
 
-    start = datetime.now(timezone.utc)
+    # Open outputs for incremental writing so progress is preserved if the run is killed.
+    with output_path.open("w", encoding="utf-8", newline="") as csv_f, provenance_path.open(
+        "w", encoding="utf-8"
+    ) as prov_f:
+        writer = csv.DictWriter(csv_f, fieldnames=_CSV_FIELDNAMES)
+        writer.writeheader()
 
-    for row in rows:
-        try:
-            result, _, row_actions, row_errors = await enrich_row(row, config)
-        except Exception as exc:  # noqa: BLE001
-            result = EnrichedRow(
-                row_id=row.row_id,
-                full_name=row.full_name,
-                address=row.address,
-                company_name=row.company_name,
-                email=row.email,
-                phone_number=row.phone_number,
-                company_issuing_the_invoice=row.company_issuing_the_invoice,
-                needs_human_review=True,
-                evidence=f"Pipeline error: {exc}",
-            )
-            row_actions = []
-            row_errors = [{"row_id": row.row_id, "error": str(exc)}]
+        enriched_rows: list[EnrichedRow] = []
+        actions: list[dict] = []
+        errors: list[dict] = []
 
-        enriched_rows.append(result)
-        provenance.extend(_build_provenance(result))
-        actions.extend(row_actions)
-        errors.extend(row_errors)
-        await asyncio.sleep(config.request_delay)
+        start = datetime.now(timezone.utc)
+
+        for row in rows:
+            try:
+                result, _, row_actions, row_errors = await enrich_fn(row, config)
+            except Exception as exc:  # noqa: BLE001
+                result = EnrichedRow(
+                    row_id=row.row_id,
+                    full_name=row.full_name,
+                    address=row.address,
+                    company_name=row.company_name,
+                    email=row.email,
+                    phone_number=row.phone_number,
+                    company_issuing_the_invoice=row.company_issuing_the_invoice,
+                    needs_human_review=True,
+                    evidence=f"Pipeline error: {exc}",
+                )
+                row_actions = []
+                row_errors = [{"row_id": row.row_id, "error": str(exc)}]
+
+            enriched_rows.append(result)
+            writer.writerow(result.model_dump(include=set(_CSV_FIELDNAMES)))
+            csv_f.flush()
+
+            for entry in _build_provenance(result):
+                prov_f.write(entry.model_dump_json() + "\n")
+            prov_f.flush()
+
+            actions.extend(row_actions)
+            errors.extend(row_errors)
+            await asyncio.sleep(config.request_delay)
 
     duration = (datetime.now(timezone.utc) - start).total_seconds()
 
@@ -82,9 +115,7 @@ async def enrich_csv(
         errors=errors,
     )
 
-    write_csv(output_path, enriched_rows)
-    write_jsonl(provenance_path, provenance)
-    write_run_report(run_report_path, run_report)
+    run_report_path.write_text(run_report.model_dump_json(indent=2), encoding="utf-8")
 
 
 def _build_provenance(row: EnrichedRow) -> list[ProvenanceEntry]:

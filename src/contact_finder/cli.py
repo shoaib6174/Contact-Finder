@@ -23,6 +23,12 @@ def main(argv: list[str] | None = None) -> int:
     enrich.add_argument("--max-calls", type=int, default=None)
     enrich.add_argument("--model", type=str, default=None)
     enrich.add_argument("--threshold", type=float, default=None)
+    enrich.add_argument(
+        "--agent-mode",
+        choices=["tool", "fast"],
+        default="fast",
+        help="tool = native Groq tool-calling loop; fast = single LLM call with pre-fetched sources.",
+    )
 
     args = parser.parse_args(argv)
 
@@ -34,6 +40,7 @@ def main(argv: list[str] | None = None) -> int:
             config.default_model = args.model
         if args.threshold is not None:
             config.confidence_threshold = args.threshold
+        config.agent_mode = args.agent_mode
 
         if not config.groq_api_key:
             print("Error: GROQ_API_KEY is required.", file=sys.stderr)

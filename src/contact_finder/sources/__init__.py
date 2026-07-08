@@ -8,6 +8,7 @@ from contact_finder.sources.secretary_of_state import sos_lookup
 from contact_finder.sources.wayback import wayback_search
 from contact_finder.sources.web_search import web_search
 from contact_finder.sources.website_contact import scrape_contact_page
+from contact_finder.sources.website_entity_resolver import website_entity_resolver
 from contact_finder.sources.whois_lookup import whois_lookup
 from contact_finder.sources.yellowpages import yellowpages_search
 from contact_finder.sources.yelp import yelp_search
@@ -21,6 +22,7 @@ __all__ = [
     "wayback_search",
     "web_search",
     "scrape_contact_page",
+    "website_entity_resolver",
     "whois_lookup",
     "yellowpages_search",
     "yelp_search",

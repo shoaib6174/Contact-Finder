@@ -38,7 +38,7 @@ def _redact_residential_lines(text: str) -> str:
     cleaned = []
     for line in lines:
         lower = line.lower()
-        if any(kw in lower for kw in RESIDENTIAL_KEYWORDS):
+        if any(re.search(rf"\b{re.escape(kw)}\b", lower) for kw in RESIDENTIAL_KEYWORDS):
             cleaned.append("[REDACTED-ADDRESS]")
         else:
             cleaned.append(line)
@@ -55,6 +55,8 @@ def is_consumer_email(email: str | None) -> bool:
 def normalize_name(name: str) -> str:
     """Lowercase and strip legal-form noise for matching."""
     name = name.lower()
+    # Collapse possessive apostrophes: Lowe's -> Lowes
+    name = re.sub(r"'s\b", "s", name)
     for suffix in ["llc", "inc", "corp", "pllc", "ltd", "co", "company"]:
         name = re.sub(rf"\b{suffix}\b", "", name)
     # collapse whitespace and punctuation

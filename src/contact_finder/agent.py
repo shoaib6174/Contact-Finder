@@ -8,9 +8,9 @@ import traceback
 from datetime import datetime, timezone
 from typing import Any
 
-from groq import AsyncGroq
-
 from contact_finder.config import Config
+from contact_finder.entity_resolution import entity_resolved
+from contact_finder.groq_client import chat_completion
 from contact_finder.models import ContactCandidate, DebtorRow, EnrichedRow, EvidenceBundle
 from contact_finder.pii_guard import normalize_name
 from contact_finder.scorer import select_best_candidate
@@ -23,6 +23,7 @@ from contact_finder.sources import (
     sos_lookup,
     wayback_search,
     web_search,
+    website_entity_resolver,
     whois_lookup,
     yellowpages_search,
     yelp_search,
@@ -42,6 +43,7 @@ _TOOL_MAP = {
     "whois_lookup": whois_lookup,
     "wayback_search": wayback_search,
     "mx_verify": mx_verify,
+    "website_entity_resolver": website_entity_resolver,
 }
 
 _TOOL_DEFINITIONS = [
@@ -199,6 +201,21 @@ _TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "website_entity_resolver",
+            "description": "Confirm the debtor entity by checking its official website for the debtor address. Helps when registry/maps are unavailable.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "address": {"type": "string"},
+                },
+                "required": ["name", "address"],
+            },
+        },
+    },
 ]
 
 
@@ -339,8 +356,13 @@ async def enrich_row(
     if not config.groq_api_key:
         return _human_review(row, "GROQ_API_KEY not configured")
 
-    client = AsyncGroq(api_key=config.groq_api_key)
     creditor_hint = normalize_name(row.company_issuing_the_invoice)
+
+    # Resolve the input once so we have clean state/address for the entity gate.
+    try:
+        norm = await normalize_company(row.company_name, row.address)
+    except Exception:  # noqa: BLE001
+        norm = {}
 
     messages: list[dict] = [
         {"role": "system", "content": build_system_prompt()},
@@ -352,6 +374,7 @@ async def enrich_row(
 
     actions: list[dict] = []
     errors: list[dict] = []
+    resolved = False
 
     for turn in range(config.max_tool_calls):
         messages = _compact_messages(messages)
@@ -359,7 +382,8 @@ async def enrich_row(
 
         is_last_turn = turn == config.max_tool_calls - 1
         try:
-            response = await client.chat.completions.create(
+            response = await chat_completion(
+                config,
                 model=config.default_model,
                 messages=messages,
                 tools=_TOOL_DEFINITIONS,
@@ -404,6 +428,7 @@ async def enrich_row(
                     continue
 
                 result = await _execute_tool(name, arguments)
+                resolved = resolved or entity_resolved(row, norm, name, result)
                 actions.append(
                     {
                         "row_id": row.row_id,
@@ -439,8 +464,24 @@ async def enrich_row(
 
         bundles = _parse_bundles(data.get("ranked_bundles", []))
         enriched, ranked = select_best_candidate(
-            row, bundles, config.confidence_threshold, row.company_issuing_the_invoice
+            row, bundles, config.confidence_threshold, row.company_issuing_the_invoice, norm.get("clean_name")
         )
+
+        # Entity-resolution gate: do not accept a website-only contact for a row
+        # that never matched a registry or maps record. This prevents hallucinated
+        # contacts on synthetic/unresolvable inputs.
+        if not enriched.needs_human_review and not resolved:
+            enriched = EnrichedRow(
+                row_id=enriched.row_id,
+                full_name=enriched.full_name,
+                address=enriched.address,
+                company_name=enriched.company_name,
+                email=enriched.email,
+                phone_number=enriched.phone_number,
+                company_issuing_the_invoice=enriched.company_issuing_the_invoice,
+                needs_human_review=True,
+                evidence="Contact found but entity not resolved in public records (registry/maps).",
+            )
 
         actions.append(
             {

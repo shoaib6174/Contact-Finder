@@ -5,6 +5,7 @@ from __future__ import annotations
 from contact_finder.config import (
     ADDRESS_MATCH,
     CORROBORATION_BONUS,
+    DOMAIN_MATCH_BONUS,
     MX_BONUS,
     ROLE_BASE,
     SOURCE_TRUST,
@@ -12,17 +13,55 @@ from contact_finder.config import (
 from contact_finder.models import ContactCandidate, DebtorRow, EnrichedRow, EvidenceBundle
 from contact_finder.pii_guard import is_consumer_email, normalize_name
 
+import tldextract
+from urllib.parse import urlparse
 
-def score_evidence(evidence: EvidenceBundle) -> float:
+
+def _domain_matches(company_name: str | None, source_url: str | None) -> bool:
+    """Return True if the source URL domain matches the normalized company name."""
+    if not company_name or not source_url:
+        return False
+    parsed = urlparse(source_url)
+    netloc = parsed.netloc or source_url.split("/")[0]
+    if netloc.startswith("www."):
+        netloc = netloc[4:]
+    registered = tldextract.extract(netloc)
+    registered_domain = f"{registered.domain}.{registered.suffix}" if registered.suffix else registered.domain
+    if not registered_domain:
+        return False
+    company_norm = normalize_name(company_name)
+    domain_norm = normalize_name(registered_domain)
+    if company_norm in domain_norm or domain_norm in company_norm:
+        return True
+    company_tokens = company_norm.split()
+    domain_tokens = domain_norm.split()
+    if company_tokens and all(token in domain_norm for token in company_tokens):
+        return True
+    if domain_tokens and all(token in company_norm for token in domain_tokens):
+        return True
+    return False
+
+
+def score_evidence(evidence: EvidenceBundle, company_name: str | None = None) -> float:
     """Compute a 0–1 confidence score from structured evidence."""
     base = ROLE_BASE.get(evidence.role, ROLE_BASE["Generic Business Contact"])
     address_mult = ADDRESS_MATCH.get(_match_label(evidence.address_match), 0.5)
-    score = base * address_mult * evidence.source_trust
+
+    # Clamp LLM-provided source_trust to the canonical mapping so low-trust
+    # categories (e.g. LinkedIn, generic web search) cannot be scored as a
+    # high-trust registry/website.
+    category = (evidence.source_categories[0] if evidence.source_categories else "web_search").lower()
+    category_trust = SOURCE_TRUST.get(category, SOURCE_TRUST["web_search"])
+    trust = min(evidence.source_trust, category_trust)
+
+    score = base * address_mult * trust
 
     if evidence.corroborated:
         score += CORROBORATION_BONUS
     if evidence.mx_verified:
         score += MX_BONUS
+    if company_name and evidence.source_urls and _domain_matches(company_name, evidence.source_urls[0]):
+        score += DOMAIN_MATCH_BONUS
 
     return round(min(1.0, score), 3)
 
@@ -39,15 +78,19 @@ def select_best_candidate(
     bundles: list[EvidenceBundle],
     threshold: float,
     creditor: str,
+    clean_name: str | None = None,
 ) -> tuple[EnrichedRow, list[dict]]:
     """Score all bundles, suppress creditor matches, and return best candidate."""
     scored: list[tuple[float, EvidenceBundle]] = []
+    company_for_domain = clean_name or row.company_name
     for bundle in bundles:
         if _matches_creditor(bundle.candidate, creditor):
             continue
         if not bundle.source_urls:
             continue
-        score = score_evidence(bundle)
+        if not bundle.candidate.email and not bundle.candidate.phone:
+            continue
+        score = score_evidence(bundle, company_for_domain)
         scored.append((score, bundle))
 
     scored.sort(key=lambda x: x[0], reverse=True)
